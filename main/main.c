@@ -22,7 +22,7 @@
 #define PUMP_WARNIG_LIMIT 3 // Số lần lỗi cho phép trước khi cảnh báo
 #define PUMP_ON_DISTANCE 5
 #define PUMP_OFF_DISTANCE 25
-#define PUMP_BASE_AREA 0.12 // m^2
+#define PUMP_BASE_AREA 0.1 // m^2
 
 #define TANK_HEIGHT 100
 #define TANK_SENSOR_OFFSET 5
@@ -96,7 +96,7 @@ void pump_control(void *pvParameters) {
             uint32_t time_off_ms =
                 (xTaskGetTickCount() - pump_off_tick) * portTICK_PERIOD_MS;
             flow_rate_lm = PUMP_BASE_AREA *
-                           (PUMP_ON_DISTANCE - PUMP_OFF_DISTANCE) * 600000.0f /
+                           (PUMP_OFF_DISTANCE - PUMP_ON_DISTANCE) * 600000.0f /
                            time_off_ms;
 
         } else if (isPumpOn & (pump_distance >= PUMP_OFF_DISTANCE)) {
@@ -105,7 +105,7 @@ void pump_control(void *pvParameters) {
         }
         gpio_set_level(PUMP_PIN, isPumpOn);
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -116,7 +116,7 @@ void log_pump_data() {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
-        ESP_LOGD(PUMP_SENSOR_TAG, "%d cm | %d", pump_distance, isPumpOn);
+        ESP_LOGI(PUMP_SENSOR_TAG, "%d cm | %d", pump_distance, isPumpOn);
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -157,7 +157,8 @@ void check_tank_level(void *pvParameters) {
                             "RAW:%d cm | AVG:%d cm | LEVEL:%d", distance,
                             avg_dis, tank_level_pct);
 
-        ESP_LOGI(TANK_LEVEL_TAG, "Tank replace time: %d minus", time_ex_tank_min);
+        ESP_LOGI(TANK_LEVEL_TAG, "Tank replace time: %d minus",
+                 time_ex_tank_min);
 
         // Gửi dữ liệu lên Blynk (comming soon)
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -165,11 +166,23 @@ void check_tank_level(void *pvParameters) {
 }
 
 void app_main(void) {
+    gpio_config_t io_cfg = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+    };
+
+    // TRIG output
+    io_cfg.mode = GPIO_MODE_OUTPUT;
+    io_cfg.pin_bit_mask = (1ULL << PUMP_PIN);
+    gpio_config(&io_cfg);
+
     ultrasonic_init(&pump_sen);
     ultrasonic_init(&tank_level_sen);
 
-    // xTaskCreate(pump_control, "pump_control", 4096, NULL, 10, NULL);
-    // xTaskCreate(log_pump_data, "log_pump_data", 4069, NULL, 5, NULL);
-    xTaskCreate(check_tank_level, "check_tank_level", 4096, &tank_level_sen, 5,
+    xTaskCreate(pump_control, "pump_control", 4096, NULL, 10, NULL);
+    xTaskCreate(log_pump_data, "log_pump_data", 4069, NULL, 5, NULL);
+    xTaskCreate(check_tank_level, "check_tank_level", 4096, &tank_level_sen,
+    5,
                 NULL);
 }
