@@ -6,126 +6,89 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "ultrasonic.h"
+#include <stdbool.h>
 #include <stdio.h>
 
-static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+#define PUMP_PIN 2
+#define TRIG_PIN 13
+#define ECHO_PIN 12
+#define TRIG_PIN_TANK 0
+#define ECHO_PIN_TANK 0
 
-#define PUMP_PIN GPIO_NUM_2
-#define TRIG_PIN GPIO_NUM_13
-#define ECHO_PIN GPIO_NUM_12
+#define PUMP_ON_DISTANCE 5
+#define PUMP_OFF_DISTANCE 25
+#define PUMP_MAX_DISTANCE 30
+#define Tank_MAX_DISTANCE 100
 
-#define MIN_DISTANCE 5
-#define MAX_DISTANCE 30
-#define TRIG_PULSE_US 10
+const static char *TAG = "RAS";
+const char *PUMP_SENSOR_TAG = "Pump sensor";
+const char *TANK_LEVEL_TAG = "Tank sensor";
 
-static const char *TAG = "ESP";
+
+static esp_err_t pump_err;
 static bool isPumpOn = false;
+static int pump_distance;
 
-typedef struct {
-    int distance;
-    bool pumpState;
-} pump_data_t;
+static ultrasonic_t pump_sen = {.trig_pin = TRIG_PIN, .echo_pin = ECHO_PIN};
+static ultrasonic_t tank_level_sen = {.trig_pin = TRIG_PIN_TANK,
+                                      .echo_pin = ECHO_PIN_TANK};
 
-static QueueHandle_t pumpQueue;
+void pump_control(void *pvParameters) {
+    while (true) {
+        pump_err =
+            ultrasonic_measure(&pump_sen, PUMP_MAX_DISTANCE, &pump_distance);
 
-/* Đo độ rộng xung echo (us) */
-static int get_pulse_time_us(gpio_num_t pin) {
-    int64_t start = 0, end = 0;
-    int timeout = 30000;
-
-    while (gpio_get_level(pin) == 0 && --timeout > 0) {
-        esp_rom_delay_us(1);
-    }
-    if (timeout <= 0)
-        return -1;
-
-    start = esp_timer_get_time();
-
-    timeout = 30000;
-    while (gpio_get_level(pin) == 1 && --timeout > 0) {
-        esp_rom_delay_us(1);
-    }
-    if (timeout <= 0)
-        return -1;
-
-    end = esp_timer_get_time();
-    return (int)(end - start);
-}
-
-/* Đo khoảng cách (cm) */
-static int get_distance(void) {
-    gpio_set_level(TRIG_PIN, 0);
-    esp_rom_delay_us(2);
-    gpio_set_level(TRIG_PIN, 1);
-    esp_rom_delay_us(TRIG_PULSE_US);
-    gpio_set_level(TRIG_PIN, 0);
-
-    int pulseTime = get_pulse_time_us(ECHO_PIN);
-    if (pulseTime < 0)
-        return -1;
-
-    return (int)(pulseTime / 58.0);
-}
-
-/* Task điều khiển bơm (50ms) */
-static void pump_task(void *arg) {
-    while (1) {
-        int distance = get_distance();
-
-        if (distance > 0) {
-            if (distance <= MIN_DISTANCE) {
+        if (pump_err == ESP_OK) {
+            if (pump_distance <= PUMP_ON_DISTANCE) {
                 isPumpOn = true;
-            } else if (distance >= MAX_DISTANCE) {
+            } else if (pump_distance >= PUMP_OFF_DISTANCE) {
                 isPumpOn = false;
             }
             gpio_set_level(PUMP_PIN, isPumpOn);
+        } else {
+            gpio_set_level(PUMP_PIN, 0);
         }
-
-        pump_data_t data = {.distance = distance, .pumpState = isPumpOn};
-        xQueueSend(pumpQueue, &data, 0);
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
-/* Task ghi log (500ms) */
-static void log_task(void *arg) {
-    pump_data_t data;
+void log_pump_data() {
     while (1) {
-        if (xQueueReceive(pumpQueue, &data, portMAX_DELAY)) {
-            if (data.distance < 0) {
-                ESP_LOGW(TAG, "Timeout!");
-            } else {
-                ESP_LOGI(TAG, "%d  %d", data.distance, data.pumpState);
-            }
+        if (pump_err != ESP_OK) {
+            ESP_LOGW(PUMP_SENSOR_TAG, "Error code %#x", pump_err);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
         }
+
+        ESP_LOGI(PUMP_SENSOR_TAG, "%d  %d", pump_distance, isPumpOn);
+
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
+void check_tank_level(void *pvParameters) {
+    while (true) {
+        int distance;
+        pump_err = ultrasonic_measure(&tank_level_sen, PUMP_MAX_DISTANCE, &distance);
+        if (pump_err != ESP_OK) {
+            ESP_LOGW(TANK_LEVEL_TAG, "Error code %#x", pump_err);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
 void app_main(void) {
-    gpio_config_t io_cfg = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-    };
+    ultrasonic_init(&pump_sen);
+    ultrasonic_init(&tank_level_sen);
 
-    // TRIG output
-    io_cfg.mode = GPIO_MODE_OUTPUT;
-    io_cfg.pin_bit_mask = (1ULL << TRIG_PIN);
-    gpio_config(&io_cfg);
-
-    // PUMP output
-    io_cfg.pin_bit_mask = (1ULL << PUMP_PIN);
-    gpio_config(&io_cfg);
-
-    // ECHO input
-    io_cfg.mode = GPIO_MODE_INPUT;
-    io_cfg.pin_bit_mask = (1ULL << ECHO_PIN);
-    gpio_config(&io_cfg);
-
-    pumpQueue = xQueueCreate(1, sizeof(pump_data_t));
-
-    xTaskCreate(pump_task, "pump_task", 4096, NULL, 7, NULL);
-    xTaskCreate(log_task, "log_task", 4096, NULL, 5, NULL);
+    xTaskCreate(pump_control, "pump_control", 4096, NULL, 10, NULL);
+    xTaskCreate(log_pump_data, "log_pump_data", 4069, NULL, 5, NULL);
+    // xTaskCreate(check_tank_level, "check_tank_level", 4096,
+    // &tank_level_sen, 5,
+    //             NULL);
 }
