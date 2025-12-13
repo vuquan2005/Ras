@@ -1,5 +1,6 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_log_level.h"
 #include "esp_rom_sys.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
@@ -28,7 +29,7 @@
 #define TANK_ALERT_MIN 80
 #define TANK_ALERT_MAX 95
 #define TANK_AVG_BUF_SIZE 5
-#define TANK_BASE_AREA 0.12 // m^2
+#define TANK_VOLLUME 160 // L
 
 const static char *TAG = "RAS";
 const static char *PUMP_SENSOR_TAG = "Pump sensor";
@@ -37,6 +38,8 @@ const static char *TANK_LEVEL_TAG = "Tank";
 static esp_err_t pump_err;
 static bool isPumpOn = false;
 static int pump_distance;
+static float flow_rate_lm = 15;
+uint8_t tank_level_pct;
 
 static ultrasonic_t pump_sen = {.trig_pin = TRIG_PIN, .echo_pin = ECHO_PIN};
 static ultrasonic_t tank_level_sen = {.trig_pin = TRIG_PIN_TANK,
@@ -70,6 +73,8 @@ int avg_add(avg_filter_t *f, int value) {
 
 void pump_control(void *pvParameters) {
     uint8_t error_count = 0;
+    TickType_t pump_off_tick = 0;
+
     while (true) {
         pump_err =
             ultrasonic_measure(&pump_sen, PUMP_MAX_DISTANCE, &pump_distance);
@@ -88,8 +93,15 @@ void pump_control(void *pvParameters) {
 
         if (!isPumpOn & (pump_distance <= PUMP_ON_DISTANCE)) {
             isPumpOn = true;
+            uint32_t time_off_ms =
+                (xTaskGetTickCount() - pump_off_tick) * portTICK_PERIOD_MS;
+            flow_rate_lm = PUMP_BASE_AREA *
+                           (PUMP_ON_DISTANCE - PUMP_OFF_DISTANCE) * 600000.0f /
+                           time_off_ms;
+
         } else if (isPumpOn & (pump_distance >= PUMP_OFF_DISTANCE)) {
             isPumpOn = false;
+            pump_off_tick = xTaskGetTickCount();
         }
         gpio_set_level(PUMP_PIN, isPumpOn);
 
@@ -100,13 +112,11 @@ void pump_control(void *pvParameters) {
 void log_pump_data() {
     while (1) {
         if (pump_err != ESP_OK) {
-            ESP_LOGW(PUMP_SENSOR_TAG, "Error code %#x", pump_err);
+            ESP_LOGE(PUMP_SENSOR_TAG, "Error code %#x", pump_err);
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
-        ESP_LOGI(PUMP_SENSOR_TAG, "%d cm | %d", pump_distance, isPumpOn);
-
-        // Tốc độ thay nước
+        ESP_LOGD(PUMP_SENSOR_TAG, "%d cm | %d", pump_distance, isPumpOn);
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -124,24 +134,30 @@ void check_tank_level(void *pvParameters) {
         int distance;
         pump_err = ultrasonic_measure(&tank_level_sen, TANK_HEIGHT, &distance);
         if (pump_err != ESP_OK) {
-            ESP_LOGW(TANK_LEVEL_TAG, "Error code %#x", pump_err);
+            ESP_LOGE(TANK_LEVEL_TAG, "Error code %#x", pump_err);
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
         int avg_dis = avg_add(&tank_level_filter, distance);
 
-        int water_level_cm = distance - TANK_SENSOR_OFFSET;
-        char water_level =
-            (char)(((TANK_HEIGHT - water_level_cm) * 100) / TANK_HEIGHT);
+        int tank_level_cm = distance - TANK_SENSOR_OFFSET;
+        tank_level_pct =
+            (uint8_t)(((TANK_HEIGHT - tank_level_cm) * 100) / TANK_HEIGHT);
+
+        int time_ex_tank_min =
+            (TANK_VOLLUME * tank_level_pct * 0.01f) / flow_rate_lm;
 
         esp_log_level_t log_level = ESP_LOG_INFO;
-        if (water_level <= TANK_ALERT_MIN || water_level >= TANK_ALERT_MAX) {
-            log_level = ESP_LOG_WARN;
+        if (tank_level_pct <= TANK_ALERT_MIN ||
+            tank_level_pct >= TANK_ALERT_MAX) {
+            log_level = ESP_LOG_ERROR;
         }
 
         ESP_LOG_LEVEL_LOCAL(log_level, TANK_LEVEL_TAG,
                             "RAW:%d cm | AVG:%d cm | LEVEL:%d", distance,
-                            avg_dis, water_level);
+                            avg_dis, tank_level_pct);
+
+        ESP_LOGI(TANK_LEVEL_TAG, "Tank replace time: %d minus", time_ex_tank_min);
 
         // Gửi dữ liệu lên Blynk (comming soon)
         vTaskDelay(pdMS_TO_TICKS(500));
