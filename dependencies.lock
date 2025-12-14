@@ -1,0 +1,17 @@
+dependencies:
+  espressif/onewire_bus:
+    dependencies: []
+    source:
+      path: D:\Development\ESP32\Ras\components\espressif__onewire_bus
+      type: local
+    version: 1.0.4
+  idf:
+    source:
+      type: idf
+    version: 5.5.1
+direct_dependencies:
+- espressif/onewire_bus
+- idf
+manifest_hash: fee5dd6bea74a68b556fde210302d61fa3eb4112c89a29bd122daf32d0eecd62
+target: esp32
+version: 2.0.0
