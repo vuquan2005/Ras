@@ -13,13 +13,14 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-
 // Pin
 #define PUMP_PIN 2
 #define TRIG_PIN 13
 #define ECHO_PIN 12
 #define TRIG_PIN_TANK 13
 #define ECHO_PIN_TANK 12
+#define ONEWIRE_GPIO 0
+#define ONEWIRE_MAX_DEVICES 2
 
 #define PUMP_MAX_DISTANCE 30
 #define PUMP_WARNIG_LIMIT 3 // Số lần lỗi cho phép trước khi cảnh báo
@@ -44,9 +45,9 @@ static int pump_distance;
 static float flow_rate_lm = 15;
 uint8_t tank_level_pct;
 
-static ultrasonic_t pump_sen = {.trig_pin = TRIG_PIN, .echo_pin = ECHO_PIN};
-static ultrasonic_t tank_level_sen = {.trig_pin = TRIG_PIN_TANK,
-                                      .echo_pin = ECHO_PIN_TANK};
+static ultrasonic_t pump_sensor = {.trig_pin = TRIG_PIN, .echo_pin = ECHO_PIN};
+static ultrasonic_t tank_level_sensor = {.trig_pin = TRIG_PIN_TANK,
+                                         .echo_pin = ECHO_PIN_TANK};
 
 typedef struct {
     int *buf;
@@ -56,15 +57,15 @@ typedef struct {
     int32_t sum;
 } avg_filter_t;
 
-int avg_add(avg_filter_t *f, int value) {
+int avg_add(avg_filter_t *f, int new_value) {
     if (f->count < f->size) {
-        f->buf[f->index] = value;
-        f->sum += value;
+        f->buf[f->index] = new_value;
+        f->sum += new_value;
         f->count++;
     } else {
         f->sum -= f->buf[f->index];
-        f->buf[f->index] = value;
-        f->sum += value;
+        f->buf[f->index] = new_value;
+        f->sum += new_value;
     }
 
     f->index++;
@@ -80,7 +81,7 @@ void pump_control(void *pvParameters) {
 
     while (true) {
         pump_err =
-            ultrasonic_measure(&pump_sen, PUMP_MAX_DISTANCE, &pump_distance);
+            ultrasonic_measure(&pump_sensor, PUMP_MAX_DISTANCE, &pump_distance);
 
         if (pump_err != ESP_OK) {
             error_count++;
@@ -96,6 +97,7 @@ void pump_control(void *pvParameters) {
 
         if (!isPumpOn & (pump_distance <= PUMP_ON_DISTANCE)) {
             isPumpOn = true;
+            gpio_set_level(PUMP_PIN, isPumpOn);
             uint32_t time_off_ms =
                 (xTaskGetTickCount() - pump_off_tick) * portTICK_PERIOD_MS;
             flow_rate_lm = PUMP_BASE_AREA *
@@ -104,11 +106,11 @@ void pump_control(void *pvParameters) {
 
         } else if (isPumpOn & (pump_distance >= PUMP_OFF_DISTANCE)) {
             isPumpOn = false;
+            gpio_set_level(PUMP_PIN, isPumpOn);
             pump_off_tick = xTaskGetTickCount();
         }
-        gpio_set_level(PUMP_PIN, isPumpOn);
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(70));
     }
 }
 
@@ -121,7 +123,7 @@ void log_pump_data() {
         }
         ESP_LOGI(PUMP_SENSOR_TAG, "%d cm | %d", pump_distance, isPumpOn);
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
@@ -135,7 +137,8 @@ void check_tank_level(void *pvParameters) {
 
     while (true) {
         int distance;
-        pump_err = ultrasonic_measure(&tank_level_sen, TANK_HEIGHT, &distance);
+        pump_err =
+            ultrasonic_measure(&tank_level_sensor, TANK_HEIGHT, &distance);
         if (pump_err != ESP_OK) {
             ESP_LOGE(TANK_LEVEL_TAG, "Error code %#x", pump_err);
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -164,7 +167,7 @@ void check_tank_level(void *pvParameters) {
                  time_ex_tank_min);
 
         // Gửi dữ liệu lên Blynk (comming soon)
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -180,11 +183,11 @@ void app_main(void) {
     io_cfg.pin_bit_mask = (1ULL << PUMP_PIN);
     gpio_config(&io_cfg);
 
-    ultrasonic_init(&pump_sen);
-    ultrasonic_init(&tank_level_sen);
+    ultrasonic_init(&pump_sensor);
+    ultrasonic_init(&tank_level_sensor);
 
     xTaskCreate(pump_control, "pump_control", 4096, NULL, 10, NULL);
     xTaskCreate(log_pump_data, "log_pump_data", 4069, NULL, 5, NULL);
-    xTaskCreate(check_tank_level, "check_tank_level", 4096, &tank_level_sen, 5,
-                NULL);
+    xTaskCreate(check_tank_level, "check_tank_level", 4096, &tank_level_sensor,
+                5, NULL);
 }
