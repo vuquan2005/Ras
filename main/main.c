@@ -90,7 +90,6 @@ void pump_control(void *pvParameters) {
             if (error_count > PUMP_WARNING_LIMIT) {
                 isPumpOn = false;
                 gpio_set_level(PUMP_PIN, 0);
-                log_push("Lỗi khi đọc giá trị bể bơm", int value, esp_log_level_t level);
                 vTaskDelay(pdMS_TO_TICKS(200));
                 error_count = 0;
             }
@@ -157,7 +156,7 @@ void check_tank_level(void *pvParameters) {
         tank_level_pct = (uint8_t)(((TANK_HEIGHT_CM - tank_level_cm) * 100) /
                                    TANK_HEIGHT_CM);
 
-        int time_ex_tank_min;
+        int time_ex_tank_min = 0;
         if (flow_rate_lm > 0)
             time_ex_tank_min =
                 (TANK_VOLLUME_L * tank_level_pct * 0.01f) / flow_rate_lm;
