@@ -77,6 +77,50 @@ int avg_add(avg_filter_t *f, int new_value) {
     return f->sum / f->count;
 }
 
+typedef struct {
+    const char *msg;
+    int value;
+    esp_log_level_t level;
+} log_package_t;
+
+static QueueHandle_t xLogQueue = NULL;
+
+void log_worker_task(void *arg) {
+    log_package_t item;
+    const char *TAG = "SYSTEM_LOG";
+
+    while (true) {
+        if (xQueueReceive(xLogQueue, &item, portMAX_DELAY) == pdTRUE) {
+            switch (item.level) {
+            case ESP_LOG_ERROR:
+                ESP_LOGE(TAG, "%s: %d", item.msg, item.value);
+                break;
+            case ESP_LOG_WARN:
+                ESP_LOGW(TAG, "%s: %d", item.msg, item.value);
+                break;
+            case ESP_LOG_INFO:
+                ESP_LOGI(TAG, "%s: %d", item.msg, item.value);
+                break;
+            default:
+                ESP_LOGI(TAG, "%s: %d", item.msg, item.value);
+                break;
+            }
+        }
+    }
+}
+
+void log_push(const char *message, int value, esp_log_level_t level) {
+    if (xLogQueue == NULL)
+        return;
+
+    log_package_t item;
+    item.msg = message;
+    item.value = value;
+    item.level = level;
+
+    xQueueSend(xLogQueue, &item, 0);
+}
+
 void pump_control(void *pvParameters) {
     uint8_t error_count = 0;
     TickType_t pump_off_tick = xTaskGetTickCount();
@@ -124,7 +168,6 @@ void pump_control(void *pvParameters) {
 void log_pump_data() {
     while (1) {
         if (pump_err != ESP_OK) {
-            ESP_LOGE(PUMP_SENSOR_TAG, "Error code %#x", pump_err);
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -185,6 +228,9 @@ void app_main(void) {
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en = GPIO_PULLUP_DISABLE,
     };
+
+    xLogQueue = xQueueCreate(10, sizeof(log_package_t));
+    xTaskCreate(log_worker_task, "log_worker", 2048, NULL, 5, NULL);
 
     // TRIG output
     io_cfg.mode = GPIO_MODE_OUTPUT;
