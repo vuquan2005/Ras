@@ -17,8 +17,8 @@
 #define PUMP_PIN 2
 #define TRIG_PIN 13
 #define ECHO_PIN 12
-#define TRIG_PIN_TANK 13
-#define ECHO_PIN_TANK 12
+#define TRIG_PIN_TANK 14
+#define ECHO_PIN_TANK 27
 #define ONEWIRE_GPIO 0
 #define ONEWIRE_MAX_DEVICES 2
 
@@ -40,6 +40,7 @@ const static char *PUMP_SENSOR_TAG = "Pump sensor";
 const static char *TANK_LEVEL_TAG = "Tank";
 
 static esp_err_t pump_err;
+static esp_err_t tank_err;
 static bool isPumpOn = false;
 static int pump_distance;
 static float flow_rate_lm = 15;
@@ -80,10 +81,10 @@ void pump_control(void *pvParameters) {
     TickType_t pump_off_tick = 0;
 
     while (true) {
-        pump_err =
+        tank_err =
             ultrasonic_measure(&pump_sensor, PUMP_MAX_DISTANCE, &pump_distance);
 
-        if (pump_err != ESP_OK) {
+        if (tank_err != ESP_OK) {
             error_count++;
             if (error_count > PUMP_WARNIG_LIMIT) {
                 gpio_set_level(PUMP_PIN, 0);
@@ -116,7 +117,7 @@ void pump_control(void *pvParameters) {
 
 void log_pump_data() {
     while (1) {
-        if (pump_err != ESP_OK) {
+        if (tank_err != ESP_OK) {
             ESP_LOGE(PUMP_SENSOR_TAG, "Error code %#x", pump_err);
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
@@ -137,9 +138,9 @@ void check_tank_level(void *pvParameters) {
 
     while (true) {
         int distance;
-        pump_err =
+        tank_err =
             ultrasonic_measure(&tank_level_sensor, TANK_HEIGHT, &distance);
-        if (pump_err != ESP_OK) {
+        if (tank_err != ESP_OK) {
             ESP_LOGE(TANK_LEVEL_TAG, "Error code %#x", pump_err);
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
@@ -157,7 +158,7 @@ void check_tank_level(void *pvParameters) {
         if (tank_level_pct <= TANK_ALERT_MIN ||
             tank_level_pct >= TANK_ALERT_MAX) {
             log_level = ESP_LOG_ERROR;
-        }
+        }   
 
         ESP_LOG_LEVEL_LOCAL(log_level, TANK_LEVEL_TAG,
                             "RAW:%d cm | AVG:%d cm | LEVEL:%d", distance,
@@ -166,7 +167,6 @@ void check_tank_level(void *pvParameters) {
         ESP_LOGI(TANK_LEVEL_TAG, "Tank replace time: %d minus",
                  time_ex_tank_min);
 
-        // Gửi dữ liệu lên Blynk (comming soon)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
